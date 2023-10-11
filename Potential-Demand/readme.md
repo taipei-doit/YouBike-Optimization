@@ -63,7 +63,7 @@ For hyperparameter tuning, we initially defined parameter spaces for each hyperp
 This project is licensed under the Apache 2.0 License. For more details, please refer to the LICENSE file.
 
 # Acknowledgements
-The authors thank **Department of Transportation, Taipei City Government** for their invaluable collaboration throughout the project, from its initiation, through ongoing communication, to its successful execution. They played a crucial role in this endeavor. We would also like to express our gratitude to **YOUBIKE Corporation**, **EasyCard Corporation**, and **Far EasTone Telecommunications Corporation** for providing the data that enabled us to complete this project.
+The authors thank **Department of Transportation, Taipei City Government** for their invaluable collaboration throughout the project, from its initiation, through ongoing communication, to its successful execution. They played a crucial role in this endeavor. We would also like to express our gratitude to **YouBike Corporation**, **EasyCard Corporation**, and **Far EasTone Telecommunications Corporation** for providing the data that enabled us to complete this project.
 
 # References
 1. [臺北市資料大平台](https://data.taipei/)
