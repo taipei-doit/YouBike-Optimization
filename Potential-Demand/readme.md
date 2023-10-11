@@ -10,8 +10,6 @@ At the end, we will predict the hourly rental and return counts for grids that d
 
 This is de-identified data provided by **EasyCard Corporation**. And through EasyCard transaction data, we can calculate the hourly rental and return counts for each YouBike station.
 
-
-
 ### Signal Data
 
 This is de-identified data provided by **Far EasTone Telecommunications Corporation**. Through this data, we can obtain hourly demographic information for each grid, including age groups, working population, residential population, and tourist population.
@@ -62,7 +60,7 @@ We have developed two sets of models, one for predicting rental counts and the o
 For hyperparameter tuning, we initially defined parameter spaces for each hyperparameter separately and then utilized **Optuna** to select the optimal combination of hyperparameters that yields the best performance.
 
 # License
-This project is licensed under the AGPL-3 License. For more details, please refer to the LICENSE file.
+This project is licensed under the Apache 2.0 License. For more details, please refer to the LICENSE file.
 
 # Acknowledgements
 The authors thank **Department of Transportation, Taipei City Government** for their invaluable collaboration throughout the project, from its initiation, through ongoing communication, to its successful execution. They played a crucial role in this endeavor. We would also like to express our gratitude to **YOUBIKE Corporation**, **EasyCard Corporation**, and **Far EasTone Telecommunications Corporation** for providing the data that enabled us to complete this project.
@@ -71,8 +69,7 @@ The authors thank **Department of Transportation, Taipei City Government** for t
 1. [臺北市資料大平台](https://data.taipei/)
 2. [政府資料開放平台](https://data.gov.tw/)
 3. [國土測繪圖資服務雲](https://maps.nlsc.gov.tw/S09SOA/)
-4.
-5. [LightGBM](https://lightgbm.readthedocs.io/en/stable/)
-6. [XGBoost](https://xgboost.readthedocs.io/en/stable/)
-7. [CatBoost](https://catboost.ai/)
-8. [Optuna](https://optuna.org/)
+4. [LightGBM](https://lightgbm.readthedocs.io/en/stable/)
+5. [XGBoost](https://xgboost.readthedocs.io/en/stable/)
+6. [CatBoost](https://catboost.ai/)
+7. [Optuna](https://optuna.org/)
