@@ -12,17 +12,29 @@ Classes:
 
 import configparser
 import datetime
+import glob
 import itertools
 import json
 import os
 import pickle
+import re
 import warnings
 from ast import literal_eval
+from typing import Tuple
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 import pykml.parser
-from shapely.geometry import LineString, Point, Polygon
+import rasterio as rio
+import rasterstats
+from rasterio.crs import CRS
+from rasterio.io import MemoryFile
+from rasterio.merge import merge
+from rasterio.warp import Resampling, calculate_default_transform, reproject
+from shapely.geometry import LineString, Point, Polygon, shape
+from shapely.geometry.multipolygon import MultiPolygon
+from skimage import measure
 from tqdm import tqdm
 
 pd.set_option('display.max_columns', None)
@@ -65,6 +77,18 @@ class Preprocess:
 
     - road_road_length: Preprocess road length data.
 
+    - terrain_dtm: Preprocess terrain data about DTM.
+
+    - terrain_ndvi: Preprocess terrain data about NDVI.
+
+    - development: Preprocess development data.
+
+    - land_landuse: Preprocess land use data.
+
+    - land_building: Preprocess land building data.
+
+    - poi: Preprocess point of interest (poi) data.
+
     - save_df: Save preprocessed data to a CSV file.
 
     """
@@ -87,6 +111,9 @@ class Preprocess:
         self.population_file_path = literal_eval(file_path['population'])
         self.traffic_file_path = literal_eval(file_path['traffic'])
         self.road_file_path = literal_eval(file_path['road'])
+        self.terrain_file_path = literal_eval(file_path['terrain'])
+        self.land_file_path = literal_eval(file_path['land'])
+        self.poi_file_path = literal_eval(file_path['poi'])
         self.done_file_path = 'output_ON' if self.target == 'on' else 'output_OFF'
         # pylint: enable=C0103
 
@@ -95,6 +122,20 @@ class Preprocess:
             f'{self.population_file_path}/FET_2023_grid_97.geojson'
         ).set_crs('epsg:3826')
         self.grid_df['Area'] = self.grid_df.geometry.area
+
+        # preprocess constants params
+        preprocess = config['PREPROCESS']
+        # pylint: disable=C0103
+        self.NDVI_THRESHOLD = literal_eval(preprocess['NDVI_THRESHOLD'])
+        self.POI_FILTER_NUM = literal_eval(preprocess['POI_FILTER_NUM'])
+        self.CONTOUR_INTERVAL = literal_eval(preprocess['CONTOUR_INTERVAL'])
+        self.SLOPE_BINS = literal_eval(preprocess['SLOPE_BINS'])
+        self.SLOPE_BINS_LABEL = literal_eval(preprocess['SLOPE_BINS_LABEL'])
+        self.ROAD_CATEGORY = literal_eval(preprocess['ROAD_CATEGORY'])
+        self.BUILDING_CATEGORY = literal_eval(preprocess['BUILDING_CATEGORY'])
+        self.LANDUSE_CATEGORY = literal_eval(preprocess['LANDUSE_CATEGORY'])
+        self.LANDUSE_CATEGORY_CODE = literal_eval(preprocess['LANDUSE_CATEGORY_CODE'])
+        # pylint: enable=C0103
 
     # get the intersection area within two Polygon series
     def overlay_within_ppl(self, df1, df2, key1, key2, method):
@@ -690,6 +731,595 @@ class Preprocess:
 
         return road_length_df
 
+    # terrain
+    def terrain_dtm(self)->pd.DataFrame:
+        """Calculate the DTM in each grid."""
+
+        def merge_dtms()->Tuple[np.ndarray, rio.Affine]:
+            """
+            Merge all of 20M DTMs in Taipei
+
+            Returns:
+                Tuple[numpy.ndarray, Affines]:
+                    A tuple containing the merged DTM data as a NumPy array and the transformation
+                    information as an Affine object.
+            """
+            # Import dtm tiles
+            dtm_input_files = list(
+                glob.glob(f'{self.terrain_file_path}/dtm_images/分幅_臺北市20MDEM/*.grd'))
+
+            # set the crs for the dtm files
+            new_crs = rio.crs.CRS({'init': 'epsg:3826'})
+
+            # Merge the DTM data
+            with MemoryFile() as memfile:
+                datasets = []
+                nodata_value = None
+
+                for file in dtm_input_files:
+                    with rio.open(file) as src:
+                        bounds = src.bounds
+                        res = src.res
+
+                        # create a new affine
+                        new_transform = rio.Affine(res[0], 0, bounds[0], 0, -res[1], bounds[1])
+
+                        # Update the new meta
+                        new_meta = src.meta.copy()
+                        new_meta.update({
+                            'count': 1,    # 1 band
+                            'driver': 'XYZ',
+                            'crs': new_crs,
+                            'transform': new_transform,
+                            'nodata': None,
+                        })
+                        data = src.read()
+                        dataset = memfile.open(**new_meta)
+
+                        # Flipping the array of data (up down)
+                        dataset.write(np.array([np.flipud(data[0])]))
+                    datasets.append(dataset)
+
+                # return the mosaic data
+                mosaic_data, mosaic_transform = merge(datasets, nodata=nodata_value)
+
+            mosaic_data = mosaic_data[0]
+            return mosaic_data, mosaic_transform
+
+        mosaic_data, mosaic_transform = merge_dtms()
+
+        # make nodata as np.nan
+        mosaic_mask = (mosaic_data == 0) # pylint: disable=C0325
+        mosaic_data[mosaic_mask] = np.nan
+
+        # set interval and create contours
+        max_val = int(self.CONTOUR_INTERVAL *
+                      round(np.amax(mosaic_data[~mosaic_mask]) / self.CONTOUR_INTERVAL))
+
+        contour_line_collection = []
+        for elev in range(0, max_val, self.CONTOUR_INTERVAL):    # get each contour
+            contours = measure.find_contours(mosaic_data, elev)
+
+            for contour in contours:
+                contour_geo = [rio.transform.xy(mosaic_transform, x, y) for x, y in contour]
+                geom = shape({'type': 'LineString', 'coordinates': contour_geo})
+                feature = {'geometry': geom}
+                feature['ELEV'] = {'ELEV': elev}
+                new_df = pd.DataFrame(feature)
+                contour_line_collection.append(new_df)
+
+        total_contours_df = pd.concat(contour_line_collection, ignore_index=True)
+        total_contours_gdf = gpd.GeoDataFrame(total_contours_df,
+                                              geometry='geometry',
+                                              crs='epsg:3826')
+
+        # Get the intersected points between grid and contour
+        copy_grid_df = self.grid_df.copy()
+        copy_grid_df.geometry = copy_grid_df.geometry.exterior
+
+        intersection_points = (
+            gpd.overlay(total_contours_gdf,
+                        copy_grid_df[['gridid', 'geometry']],
+                        how='intersection',
+                        keep_geom_type=False)    # keep the non-linestring geometry object
+        )
+
+        # multipoint to single point
+        single_point = intersection_points[intersection_points.geom_type == 'MultiPoint'].explode(
+            index_parts=True)
+        # count the intersected point for each grid
+        single_point_grouped = pd.DataFrame(single_point.groupby(['gridid'])['ELEV'].count())
+        # Calculate the slope
+        single_point_grouped['Slope'] = single_point_grouped.apply(
+            lambda count: ((count * 3.14 * self.CONTOUR_INTERVAL) /
+                           (8 * 250)) * 100    # 250 means the grid width/hieght
+        )
+
+        # convert the continous slope into discrete classes
+        # convert the category dtype into int
+        single_point_grouped['SlopeClass'] = (pd.cut(single_point_grouped['Slope'],
+                                                right=True,
+                                                bins=self.SLOPE_BINS,
+                                                labels=self.SLOPE_BINS_LABEL).astype(int))
+
+        fill_values = {'Slope':0, 'SlopeClass':1}
+        all_grid_slope = (pd.merge(self.grid_df[['gridid']],
+                                  single_point_grouped.reset_index(),
+                                  on='gridid',
+                                  how='left')
+                                  .fillna(value=fill_values)
+                                  .drop(['ELEV'], axis='columns'))
+
+
+        def dtm_zonal_stats(mosaic_data:np.ndarray, mosaic_transform:rio.Affine) -> pd.DataFrame:
+            """
+            Calculate zonal statistics by grids to obtain the mean DTM value for each grid.
+
+            Args:
+                mosaic_data (numpy.ndarray): The DTM data as a NumPy array.
+                mosaic_transform (Affine): The transformed affine for the DTM data (epsg:3826).
+
+            Returns:
+                pd.DataFrame: A DataFrame containing the grid IDs and the mean DTM values
+                              for each grid.
+
+            """
+
+            # zonal statistics for getting mean NDVI of each grid
+            dtm_zonal = rasterstats.zonal_stats(
+                self.grid_df[['geometry']],    # geometry object/ epsg:3826
+                mosaic_data,    # ndarray
+                affine=mosaic_transform,    # the transformed affine (epsg:3826)
+                stats='mean',    # Get the mean NDVI by grid
+                nodata=0,
+            )
+
+            # Assign gridid for the output of zonal statistics
+            dtm_zonal_df = pd.concat(
+                [self.grid_df[['gridid']],
+                 pd.DataFrame(dtm_zonal, columns=['mean']).rename(columns={'mean':'ElevMean'})],
+                axis='columns',
+            )
+            return dtm_zonal_df
+
+        dtm_zonal_df = dtm_zonal_stats(mosaic_data, mosaic_transform)
+
+        all_grid_slope = pd.merge(all_grid_slope, dtm_zonal_df, on='gridid', how='inner')
+
+        return all_grid_slope
+
+    # NDVI
+    def terrain_ndvi(self)->pd.DataFrame:
+        """
+        Calculate the NDVI(Normalized Difference Vegetation Index) in each grid.
+
+        Returns:ㄉㄢ
+            pandas.DataFrame: A DataFrame containing the mean NDVI values and tree coverage
+                              for each grid.
+        """
+        # Import satellite data (Download from https://apps.sentinel-hub.com/eo-browser/)
+        ndvi_b04_fp = os.path.join(
+            self.terrain_file_path,
+            r'ndvi_images/2023-03-06-00_00_2023-03-06-23_59_Sentinel-2_L2A_B04_(Raw).tiff',
+        )
+        ndvi_b08_fp = os.path.join(
+            self.terrain_file_path,
+            r'ndvi_images/2023-03-06-00_00_2023-03-06-23_59_Sentinel-2_L2A_B08_(Raw).tiff',
+        )
+        with rio.open(ndvi_b04_fp) as src:
+            ndvi_b04 = src.read(1)
+            bounds = src.bounds
+            meta = src.meta.copy()
+        with rio.open(ndvi_b08_fp) as src:
+            ndvi_b08 = src.read(1)
+
+        # NDVI formula: (NIR - R) / (NIR + R)
+        np.seterr(invalid='ignore')
+        # Calculate NDVI and Ensure that the denominator is not 0
+        ndvi_values = np.where((ndvi_b08 + ndvi_b04) == 0, 0,
+                               (ndvi_b08 - ndvi_b04) / (ndvi_b08 + ndvi_b04))
+        ndvi_values = ndvi_values.astype(np.float32)
+
+        def ndvi_zonal_stats(meta:dict, bounds:tuple, ndvi_values:np.ndarray) -> pd.DataFrame:
+            """
+            zonal statistics by grids, get the mean NDVI value for each grid.
+
+            Args:
+                meta (dict): Metadata information for the NDVI data.
+                bounds (tuple): Geographic bounds of the NDVI data.
+                ndvi_values (numpy.ndarray): NDVI values.
+
+            Returns:
+                pandas.DataFrame: A DataFrame containing the mean NDVI values for each grid.
+            """
+
+            # Reproject transform from epsg:4326 to epsg:3826
+            dst_crs = CRS.from_epsg(3826)
+            reprojected_transform, reprojected_width, reprojected_height = (
+                calculate_default_transform(
+                meta['crs'], dst_crs, meta['width'], meta['height'], *bounds))
+
+            # Reproject values from epsg:4326 to epsg:3826
+            reprojected_shape = (reprojected_height, reprojected_width)
+            reprojected_ndvi_values = np.empty(reprojected_shape, dtype = ndvi_values.dtype)
+            reproject(
+                source=ndvi_values,
+                destination= reprojected_ndvi_values,
+                src_transform= meta['transform'],
+                src_crs= meta['crs'],
+                dst_transform= reprojected_transform,
+                dst_crs= dst_crs,
+                resampling= Resampling.nearest # Use appropriate resampling method
+            )
+
+            # Zonal statistics for getting mean NDVI of each grid
+            ndvi_zonal = rasterstats.zonal_stats(
+                self.grid_df[['geometry']],    # geometry object/ epsg:3826
+                reprojected_ndvi_values,    # ndarray
+                affine=reprojected_transform,    # the transformed affine (epsg:3826)
+                stats='mean',    # Get the mean NDVI by grid
+                nodata=0,
+            )
+
+            # Assign gridid for the output of zonal statistics
+            ndvi_zonal_df = pd.concat(
+                [self.grid_df[['gridid']],
+                 pd.DataFrame(ndvi_zonal, columns=['mean']).rename(columns={'mean':'NdvMean'})],
+                axis='columns',
+            )
+            return ndvi_zonal_df
+
+        def ndvi_coverage(ndvi_values:np.ndarray) -> pd.DataFrame:
+            """
+            Calculate the coverage of tree pixels in each grid based on NDVI values.
+
+            Args:
+                ndvi_values (numpy.ndarray): NDVI values.
+
+            Returns:
+                pandas.DataFrame: A DataFrame containing the calculated tree coverage for each grid.
+            """
+            # Defined tree and non-tree pixels code
+            tree_value = 2
+            non_tree_value = 1
+
+            # Classify tree and non-tree by NDVI_THRESHOLD
+            classified_data = np.where(ndvi_values >= self.NDVI_THRESHOLD, tree_value,
+                                       non_tree_value)
+            classified_data = classified_data.astype(np.int32)
+
+            # Polygonize the raster data with tree value
+            shapes = list(rio.features.shapes(classified_data, transform=meta['transform']))
+            polygons = [shape(geom) for geom, value in shapes if value == tree_value]
+
+            # Create a new geodataframe for vectorized polygon
+            tree_vector = (gpd.GeoDataFrame({
+                'fid': [tree_value]},
+                geometry=[MultiPolygon(polygons)
+            ]).set_crs('epsg:4326').to_crs('epsg:3826'))
+
+            # Intersects between grid and tree multipolygon
+            ndvi_coverage_df = (gpd.overlay(tree_vector[['geometry']],
+                                            self.grid_df[['gridid', 'geometry']],
+                                            how='intersection'))
+
+            # Calculate coverage
+            ndvi_coverage_df['area'] = ndvi_coverage_df.area
+            ndvi_coverage_df = ndvi_coverage_df.groupby('gridid')['area'].sum()
+            ndvi_coverage_df = (pd.merge(self.grid_df[['gridid', 'Area']],
+                                         ndvi_coverage_df,
+                                         how='left',
+                                         on='gridid').fillna(0))
+            ndvi_coverage_df['NdviCoverage'] = (ndvi_coverage_df['area'] /
+                                            ndvi_coverage_df['Area']) * 100
+
+            # Drop redundance columns
+            ndvi_coverage_df.drop(['area', 'Area'], axis=1, inplace=True)
+
+            return ndvi_coverage_df
+
+        # Get the zonal and coverage
+        ndvi_zonal_df = ndvi_zonal_stats(meta, bounds, ndvi_values)
+        ndvi_coverage_df = ndvi_coverage(ndvi_values)
+
+        # Concat the coverage and zonal together
+        ndvi_df = pd.merge(ndvi_zonal_df, ndvi_coverage_df, how='inner', on='gridid')
+        ndvi_df = ndvi_df.round(6)
+
+        return ndvi_df
+
+    def _sindex_intersection(
+        self,
+        input_data: gpd.GeoDataFrame,
+        tree_data: gpd.GeoDataFrame,
+        input_columns: list = None,
+        tree_columns: list = None,
+        area: bool = True,
+        geometry: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Perform spatial intersection using a spatial index between two GeoDataFrames.
+
+        Using spatial index to intersect between two polygon data,
+        tree_data means the data with spatial index
+        input_data means the input of the function sindex.query()
+
+        Args:
+            input_data:
+            tree_data:
+            input_columns: the column you wanted to keep from the input data
+            tree_columns: the column you wanted to keep from the tree data
+            area: If true, return the area of each intersected polygon as a new column.
+            geometry: If true, return the geometry info as a new column in the dataframe.
+        Returns:
+            pandas.DataFrame: A DataFrame containing specified columns from input_data
+            and tree_data, along with optional area and geometry columns for intersected
+            polygons.
+        """
+        # the columns for the optput dataframe
+        columns = input_columns + tree_columns
+        if area:
+            columns.append('area')
+        if geometry:
+            columns.append('geometry')
+        sindex_output_df = pd.DataFrame(columns=columns)
+
+        # create the spatial index for the tree data
+        sindex = tree_data.sindex
+        # Using spatial index to intersects
+        idx = sindex.query(input_data['geometry'], predicate='intersects')
+
+        row_list = []
+        for input_idx, tree_idx in zip(idx[0], idx[1]):
+            selected_input = input_data.iloc[input_idx]
+            selected_tree = tree_data.iloc[tree_idx]
+            intersects = selected_tree.geometry.intersection(selected_input.geometry)
+
+            # Eliminate the invalid geometry types and insert row data information
+            row = {}
+            if intersects.geom_type in ['Polygon', 'MultiPolygon']:
+                if input_columns:
+                    for col in input_columns:
+                        row[col] = selected_input[col]
+                if tree_columns:
+                    for col in tree_columns:
+                        row[col] = selected_tree[col]
+                if area:
+                    row['area'] = intersects.area
+                if geometry:
+                    row['geometry'] = intersects
+
+                row_list.append(row)
+
+        sindex_output_df = pd.concat([sindex_output_df, pd.DataFrame(row_list)],
+                                     axis=0,
+                                     ignore_index=True)
+        return sindex_output_df
+
+
+    def _landuse_calculate(self)->pd.DataFrame:
+        """
+        Calculate land use statistics for each grid.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing land use category codes, areas, and grid IDs.
+        """
+        # Import landuse data
+        landuse = gpd.read_file(f'{self.land_file_path}/landuse_108.gpkg', layer='landuse_108')
+
+        # mapping landuse code to landuse category code
+        landuse['category'] = landuse['code'].map(
+            lambda code: self.LANDUSE_CATEGORY.get(str(code), 'unknown'))
+
+        input_columns = ['code', 'category']
+        tree_columns = ['gridid']
+
+        landuse_df = self._sindex_intersection(landuse,
+                                               self.grid_df,
+                                               input_columns,
+                                               tree_columns,
+                                               area=True,
+                                               geometry=True)
+
+        return landuse_df
+
+    # land(土地使用現況)
+    def land_landuse(self)->pd.DataFrame:
+        """
+        Calculate land use ratios for each grid.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing land use ratios for each grid.
+
+        """
+        landuse_df = self._landuse_calculate()
+
+        landuse_output_df = landuse_df.pivot_table(index='gridid',
+                                                   columns='category',
+                                                   values='area',
+                                                   aggfunc='sum').fillna(0)
+
+        landuse_output_df = pd.merge(self.grid_df[['gridid', 'Area']],
+                                     landuse_output_df,
+                                     how='left',
+                                     on='gridid')
+
+        for code, name in self.LANDUSE_CATEGORY_CODE.items():
+            landuse_output_df[f'{name}Ratio'] = (landuse_output_df[str(code)] /
+                                                 landuse_output_df['Area'])
+            landuse_output_df.drop(str(code), axis=1, inplace=True)
+
+        landuse_output_df.drop('Area', axis=1, inplace=True)
+        landuse_output_df = landuse_output_df.round(6)
+
+        return landuse_output_df
+
+    # development(容積)
+    def land_building(self)->pd.DataFrame:
+        """
+        Calculate building volume and category ratios for each grid.
+
+        Returns:
+            pd.DataFrame: A DataFrame containing building volume, category ratios,
+            and other relevant data for each grid.
+        """
+
+        # Import building data
+        building = gpd.read_file(os.path.join(self.land_file_path, 'building.gpkg'),
+                                 layer='building')
+
+        # Fix building geometry
+        building.geometry = building.geometry.buffer(0)
+
+        # Get the landuse Ratio
+        landuse_df = self._landuse_calculate()
+        landuse_df = gpd.GeoDataFrame(landuse_df, geometry='geometry', crs='epsg:3826')
+
+        # Get each building's floor data
+        input_columns = ['1_floor']
+        tree_columns = ['gridid', 'code']
+        development_df = self._sindex_intersection(building,
+                                                  landuse_df,
+                                                  input_columns,
+                                                  tree_columns,
+                                                  area=True)
+
+        development_df['floor_area'] = development_df['1_floor'] * development_df['area']
+
+        development_df_pt = (development_df.pivot_table(index='gridid',
+                                                       columns='code',
+                                                       values='floor_area',
+                                                       aggfunc='sum')
+                                            .fillna(0))
+
+        # Sum of total building area
+        development_df_pt['All'] = development_df_pt.sum(axis=1)
+
+        # Filter selected columns
+        selected_category = list(self.BUILDING_CATEGORY)
+        building_category = selected_category.copy()
+        building_category.append('All')
+
+        # Filtered table
+        development_df_pt = development_df_pt[building_category]
+        development_df_pt['Others'] = (
+            development_df_pt['All'] -
+            development_df_pt.loc[:, selected_category].sum(axis=1)
+            # Others = Total - selected categories
+        )
+
+        # Rename columns
+        development_df_pt.rename(columns=self.BUILDING_CATEGORY, inplace=True)
+
+        # # Merge back to the origin grid
+        development_df_pt = (pd.merge(self.grid_df[['gridid', 'Area']], development_df_pt,
+                                                                   how='left',
+                                                                   on='gridid')
+                                                            .fillna(0))
+
+        # Add ratio columns
+        for value in self.BUILDING_CATEGORY.values():
+            development_df_pt[f'{value}Ratio'] = (development_df_pt[value] /
+                                                   development_df_pt['Area'])
+
+        development_df_pt['OthersRatio'] = (development_df_pt['Others'] /
+                                             development_df_pt['Area'])
+        development_df_pt['AllRatio'] = development_df_pt['All'] / development_df_pt['Area']
+
+        development_df_pt = (development_df_pt.round(6)
+                             .drop(['Area'], axis=1))
+
+        return development_df_pt
+
+
+    # poi
+    # POI
+    def poi(self)->pd.DataFrame:
+        """
+        Calculate the number of the point of interest(POI) in each grid.
+
+        Returns:
+            pandas.DataFrame: A DataFrame containing the calculated number of POIs of various types
+                              and grid IDs.(17 types)
+                              (art gallery/bar/book store/cafe/clothing store/convenience store
+                              department store/drugstore/laundary/lodging/museum/night_club/
+                              restaurant/shopping mall/store/supermarket/tourist attraction)
+        """
+
+        # Import data
+        poi_file_path_list = list(glob.glob(f'{self.poi_file_path}/*.csv'))
+
+        def poi_preprocessing(poi_file_path:str)->pd.DataFrame:
+            """
+            Perform preprocessing for single type of POI data
+
+            Args:
+                poi_file_path (str): The file path to the POI data CSV file.
+            Returns:
+                pandas.DataFrame: A DataFrame containing aggregated POI data for each grid.
+
+            """
+            # Get the POI name by the original file name
+            layer_name = ''.join(
+                re.search(r'poi_(.*?)\.csv', poi_file_path).group(1).capitalize().split('_'))
+
+            # import poi data
+            poi_df = pd.read_csv(poi_file_path)
+
+            # Convert DataFrame into GeoDataFrame
+            poi_gdf = (
+                gpd.GeoDataFrame(
+                    poi_df[['rating_num', 'rating']],
+                    geometry=gpd.points_from_xy(poi_df.lng.astype(float), poi_df.lat.astype(float)),
+                    crs='epsg:4326'
+                ).to_crs('epsg:3826')    # destinate crs
+            )
+
+            # POIs intersect with grid and compute the aggregation
+            poi_agg_df = (
+                gpd.sjoin(
+                    self.grid_df[['gridid', 'geometry']],
+                    poi_gdf,
+                    predicate='intersects',
+                    how='inner')
+                .loc[lambda x: x['rating_num'] > self.
+                    POI_FILTER_NUM]  # filter the POI rating less than the threshold POI_FILTER_NUM
+                .groupby(['gridid'])
+                .agg({
+                    'rating_num': ['count', 'sum'],    # create multiIndex columns
+                    'rating': 'sum'})
+                .droplevel(0, axis=1)    # flatten the multiIndex columns built by agg() function
+                .reset_index()    # let 'gridid' as a new column instead of the index
+            )
+
+            # Update the columns name
+            poi_agg_df.columns = [
+                'gridid',
+                f'{layer_name}POICounts',
+                f'{layer_name}POIRatingCountsSum',
+                f'{layer_name}POIRatingStarSum',
+            ]
+
+            # Merge with original grid, if no data, fill 0.
+            poi_merge_df = (pd.merge(self.grid_df[['gridid']],poi_agg_df,on='gridid',how='left')
+                    .fillna(0)
+                    .astype({f'{layer_name}POICounts':'int',
+                             f'{layer_name}POIRatingCountsSum':'int'}))
+
+            return poi_merge_df
+
+        poi_df = pd.DataFrame()
+
+        # Merge all types of POI
+        for file_path in poi_file_path_list:
+            poi_merge_df = poi_preprocessing(file_path)
+            if poi_df.empty:
+                poi_df = poi_merge_df
+            else:
+                poi_df = pd.merge(poi_df, poi_merge_df, on='gridid')
+
+        return poi_df
+
     # save preprocessed data
     def save_df(self, df):
         df.to_csv(
@@ -826,6 +1456,12 @@ class Preprocess:
             ('Road Tree', self.road_tree),
             ('Road Light', self.road_light),
             ('Road Road Area', self.road_road_area),
+            ('Road Road Length', self.road_road_length),
+            ('Terrain DTM', self.terrain_dtm),
+            ('Terrain NDVI', self.terrain_ndvi),
+            ('Land Landuse', self.land_landuse),
+            ('Land Building', self.land_building),
+            ('POI', self.poi)
         ]
 
 
