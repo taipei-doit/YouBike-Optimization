@@ -163,6 +163,9 @@ class Preprocess:
         return overlay_df
 
     # transaction
+    # DEPRECATED for the hybrid pipeline: tabular aggregation moved to clj-etl.
+    # Spatial stop→grid overlay lives in src/bridge/export_tabular.py.
+    # Kept for parity checks (make parity-legacy) until those pass.
     def transaction(self):
         # read stop data
         stop_df = pd.read_csv(
@@ -272,6 +275,8 @@ class Preprocess:
         return on_df, off_df
 
     # population (人口信令)
+    # DEPRECATED for the hybrid pipeline: logic moved to clj-etl population.clj.
+    # Kept for parity checks (make parity-legacy) until those pass.
     def population(self):
         # read data
         population_df = pd.read_csv(
@@ -1327,82 +1332,74 @@ class Preprocess:
         )
         print('Save the dataframe after preprocessing!')
 
+    def _load_staging_base(self) -> pd.DataFrame:
+        """Load GridID×Date×Hour base keys produced by Clojure ETL."""
+        path = 'staging/base_keys.parquet'
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f'{path} missing. Run `make bridge` and `make etl-clj` first.'
+            )
+        final_df = pd.read_parquet(path)
+        # Restrict to configured date_list (Clojure may include the same set)
+        final_df = final_df[final_df['Date'].astype(str).isin(self.date_list)].copy()
+        final_df['Date'] = final_df['Date'].astype(str)
+        return final_df.reset_index(drop=True)
+
     # pipeline of preprocess
     def run(self):
         """
         Run preprocessing.
-        """
-        # create Base df with complete gridID, Date, Hour
-        gridid_ = list(
-            set(self.grid_df['gridid'])
-        )
-        hour_ = list(range(24))
-        product_elements = list(
-            itertools.product(gridid_, self.date_list, hour_)
-        )
-        keys = ['GridID', 'Date', 'Hour']
-        final_df = pd.DataFrame(
-            product_elements, columns=keys
-        )
-        final_df['Weekday'] = pd.to_datetime(
-            final_df['Date'], format='%Y%m%d'
-        ).dt.weekday
-        final_df['IsWeekend'] = final_df['Weekday'].apply(
-            lambda x: 1 if x > 4 else 0
-        )
 
-        ## transaction
+        Tabular transaction/population features come from Clojure ETL staging
+        Parquet files; GIS / raster / POI features remain in this module.
+        """
+        keys = ['GridID', 'Date', 'Hour']
+        final_df = self._load_staging_base()
+
+        ## transaction (from Clojure staging)
         def transaction_merge(final_df)->pd.DataFrame:
             """
             Merge transaction data with the final dataset.
-            Inclouding OnCounts, OffCounts, NetCounts.
+            Including OnCounts, OffCounts, NetCounts.
             """
-            tran_on_df, tran_off_df = self.transaction()
-            tran_on_keys = ['gridid', 'on_date', 'on_hour']
-            tran_off_keys = ['gridid', 'off_date', 'off_hour']
-            tran_on_df = tran_on_df[tran_on_keys+['counts']].groupby(
-                tran_on_keys).sum().reset_index()
-            tran_off_df = tran_off_df[tran_off_keys+['counts']].groupby(
-                tran_off_keys).sum().reset_index()
-
-            # OnCounts
+            txn_path = 'staging/features_transaction.parquet'
+            if not os.path.exists(txn_path):
+                raise FileNotFoundError(
+                    f'{txn_path} missing. Run `make etl-clj` first.'
+                )
+            txn_df = pd.read_parquet(txn_path)
+            txn_df['Date'] = txn_df['Date'].astype(str)
+            feature_cols = ['OnCounts', 'OffCounts', 'NetCounts']
             final_df = final_df.merge(
-                tran_on_df, how='left', left_on=keys, right_on=tran_on_keys
+                txn_df[keys + feature_cols], how='left', on=keys
             )
-            final_df = final_df[['GridID', 'Date', 'Hour', 'IsWeekend', 'counts']]
-            final_df.rename(
-                columns={'counts': 'OnCounts'}, inplace=True
-            )
-            tem_df_cols = list(final_df.columns)
-
-            # OffCounts
-            final_df = final_df.merge(
-                tran_off_df, how='left', left_on=keys, right_on=tran_off_keys
-            )
-            final_df = final_df[tem_df_cols+['counts']]
-            final_df.rename(
-                columns={'counts': 'OffCounts'}, inplace=True
-            )
-
-            # NetCounts
-            final_df.fillna(0, inplace=True)
-            final_df['NetCounts'] = final_df['OffCounts'] - final_df['OnCounts']
-
+            final_df[feature_cols] = final_df[feature_cols].fillna(0)
+            # Legacy DF.csv kept IsWeekend but dropped Weekday after txn merge
+            if 'Weekday' in final_df.columns:
+                final_df = final_df.drop(columns=['Weekday'])
             return final_df
 
-        ## Population
+        ## Population (from Clojure staging)
         def population_merge(final_df)->pd.DataFrame:
             """
             Merge population data with the final dataset.
-            Inclouding Age_15_17_Counts, Age_18_21_Counts, ..., Age_Over65_Counts, Age_Total_Counts,
-            WorkPopulationCounts, LivePopulationCounts, TourPopulationCounts
+            Including Age_* counts, Work/Live/Tour population counts.
             """
-            population_df = self.population()
-            popu_off_keys = ['網格編號', '日期', '時間']
-            final_df = (final_df
-                        .merge(population_df, how='left', left_on=keys, right_on=popu_off_keys)
-                        .drop(popu_off_keys, axis=1)
-                        .fillna(0))
+            pop_path = 'staging/features_population.parquet'
+            if not os.path.exists(pop_path):
+                raise FileNotFoundError(
+                    f'{pop_path} missing. Run `make etl-clj` first.'
+                )
+            population_df = pd.read_parquet(pop_path)
+            population_df['Date'] = population_df['Date'].astype(str)
+            feature_cols = [
+                c for c in population_df.columns if c not in keys
+            ]
+            final_df = (
+                final_df.merge(
+                    population_df[keys + feature_cols], how='left', on=keys
+                ).fillna(0)
+            )
             return final_df
 
         ## Traffic MRT

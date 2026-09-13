@@ -2,3 +2,10 @@
 /Potential-Demand/.ignore
 Potential-Demand/semgrep.sarif
 /.cursor
+Potential-Demand/staging/*.parquet
+Potential-Demand/clj-etl/.cpcache/
+Potential-Demand/clj-etl/.tools/
+Potential-Demand/clj-etl/.clj-config/
+**/__pycache__/
+*.pyc
+clojure-tools-1.12.6.1673.tar.gz

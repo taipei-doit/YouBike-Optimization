@@ -7,6 +7,20 @@ Furthermore, under the current operational model, YouBike Corporation assign per
 
 In addition to the existing stations, we also give significant consideration to the areas where we plan to set up new stations in the future. We divide Taipei City into 4,309 grids, some of which may already have stations, while others do not. We utilize machine learning to build a model that predicts rental and return counts based on the existing station grids. With this model, we can forecast the potential demand in grids without stations and determine how many docks are needed. Of course, not all grids without stations will require new stations; unsuitable areas will not appear in our recommended station expansion list.
 
+# Tech stack
+
+Hybrid pipeline under [`Potential-Demand/`](Potential-Demand/):
+
+| Layer | Stack | Responsibility |
+|-------|--------|----------------|
+| Tabular ETL | JDK 17+, Clojure CLI, [tablecloth](https://github.com/scicloj/tablecloth) | Population signal pivot/merge; transaction hourly aggregation after stop→grid map |
+| Spatial + bridge | Python 3.9, GeoPandas, Shapely, Rasterio, pandas, PyArrow | Stop→grid overlay, GIS/raster/POI features, pickle→Parquet bridge |
+| Modeling | LightGBM, XGBoost, CatBoost, Optuna, scikit-learn | Train / tune / inference |
+
+**Boundary:** spatial geometry, raster, and ML stay in Python. Clojure only runs non-spatial batch transforms, exchanging data via `Potential-Demand/staging/*.parquet`.
+
+Orchestration: `make -C Potential-Demand pipeline` (`bridge` → `etl-clj` → `parity` → `preprocess`).
+
 # Acknowledgements
 The authors would like to extend our gratitude to **Department of Transportation, Taipei City Government** and **YouBike Corporation** for their contributions and support to this project.
 The authors are thankful for the assistance and resources provided, which were instrumental in the successful completion of this project.
