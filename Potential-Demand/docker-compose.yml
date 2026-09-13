@@ -1,0 +1,32 @@
+# Batch containers only — not microservices.
+# Usage: docker compose build && docker compose run --rm clj-etl --dates 20230305 ...
+
+services:
+  clj-etl:
+    build:
+      context: ./clj-etl
+      dockerfile: Dockerfile
+    working_dir: /work/clj-etl
+    volumes:
+      - ./staging:/work/staging
+      - ./input:/work/input:ro
+      - ./fixtures:/work/fixtures:ro
+      # Live-reload Clojure sources during development
+      - ./clj-etl/src:/work/clj-etl/src:ro
+    environment:
+      CLJ_CONFIG: /tmp/.clojure
+
+  python-batch:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /work
+    volumes:
+      - ./staging:/work/staging
+      - ./input:/work/input
+      - ./fixtures:/work/fixtures
+      - ./output_ON:/work/output_ON
+      - ./output_OFF:/work/output_OFF
+      - ./src:/work/src
+      - ./preprocess.py:/work/preprocess.py
+      - ./scripts:/work/scripts

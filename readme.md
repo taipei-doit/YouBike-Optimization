@@ -13,13 +13,17 @@ Hybrid pipeline under [`Potential-Demand/`](Potential-Demand/):
 
 | Layer | Stack | Responsibility |
 |-------|--------|----------------|
-| Tabular ETL | JDK 17+, Clojure CLI, [tablecloth](https://github.com/scicloj/tablecloth) | Population signal pivot/merge; transaction hourly aggregation after stop→grid map |
-| Spatial + bridge | Python 3.9, GeoPandas, Shapely, Rasterio, pandas, PyArrow | Stop→grid overlay, GIS/raster/POI features, pickle→Parquet bridge |
-| Modeling | LightGBM, XGBoost, CatBoost, Optuna, scikit-learn | Train / tune / inference |
+| Tabular ETL | Clojure + tablecloth in **Docker** (`eclipse-temurin:17`) | Population / transaction aggregation |
+| Spatial + bridge | Python 3.9, GeoPandas, Rasterio, pandas, PyArrow | Stop→grid overlay, GIS features, pickle→Parquet |
+| Modeling | LightGBM, XGBoost, CatBoost, Optuna | Train / tune / inference |
 
-**Boundary:** spatial geometry, raster, and ML stay in Python. Clojure only runs non-spatial batch transforms, exchanging data via `Potential-Demand/staging/*.parquet`.
+**Not microservices:** two **batch containers** (`python-batch`, `clj-etl`) plus file exchange under `staging/`. No host JDK required for Clojure ETL.
 
-Orchestration: `make -C Potential-Demand pipeline` (`bridge` → `etl-clj` → `parity` → `preprocess`).
+```bash
+make -C Potential-Demand docker-build
+make -C Potential-Demand smoke-docker   # recommended without local conda/JDK
+make -C Potential-Demand pipeline       # needs private input/data
+```
 
 # Acknowledgements
 The authors would like to extend our gratitude to **Department of Transportation, Taipei City Government** and **YouBike Corporation** for their contributions and support to this project.

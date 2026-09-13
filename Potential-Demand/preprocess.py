@@ -93,7 +93,7 @@ class Preprocess:
 
     """
 
-    def __init__(self, date_list):
+    def __init__(self, date_list, transaction_dir=None, population_dir=None):
         # date
         self.date_list = date_list
         self.hyphen_date_list = [x[0:4] + '-' + x[4:6] + '-' + x[6:8] for x in self.date_list]
@@ -107,8 +107,12 @@ class Preprocess:
         # file path
         file_path = config['FILEPATH']
         # pylint: disable=C0103
-        self.transaction_file_path = literal_eval(file_path['transaction'])
-        self.population_file_path = literal_eval(file_path['population'])
+        self.transaction_file_path = (
+            transaction_dir or literal_eval(file_path['transaction'])
+        )
+        self.population_file_path = (
+            population_dir or literal_eval(file_path['population'])
+        )
         self.traffic_file_path = literal_eval(file_path['traffic'])
         self.road_file_path = literal_eval(file_path['road'])
         self.terrain_file_path = literal_eval(file_path['terrain'])
@@ -183,7 +187,13 @@ class Preprocess:
         for date in self.date_list:
             tem_file = f'{self.transaction_file_path}/202303_txn_identified_transfer/{date}.pkl'
             with open(tem_file,'rb') as tem:
-                tem_file = pickle.load(tem)
+                payload = pickle.load(tem)
+                if isinstance(payload, pd.DataFrame):
+                    tem_file = payload
+                elif isinstance(payload, list):
+                    tem_file = pd.DataFrame(payload)
+                else:
+                    raise TypeError(f'Unsupported txn pickle type: {type(payload)}')
                 df = pd.concat([df, tem_file])
         df.index = range(0, len(df))
 

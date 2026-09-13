@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import Optional
 
 import pandas as pd
 
@@ -112,8 +113,16 @@ def _compare(name: str, legacy: pd.DataFrame, staging: pd.DataFrame, cols: list)
     return ok
 
 
-def run(date_list: list[str]) -> int:
-    p = preprocess.Preprocess(date_list=date_list)
+def run(
+    date_list: list[str],
+    transaction_dir: Optional[str] = None,
+    population_dir: Optional[str] = None,
+) -> int:
+    p = preprocess.Preprocess(
+        date_list=date_list,
+        transaction_dir=transaction_dir,
+        population_dir=population_dir,
+    )
 
     txn_staging = pd.read_parquet('staging/features_transaction.parquet')
     pop_staging = pd.read_parquet('staging/features_population.parquet')
@@ -135,9 +144,11 @@ def main() -> None:
         default=','.join(DEFAULT_DATES),
         help='Comma-separated YYYYMMDD dates',
     )
+    parser.add_argument('--transaction-dir', default=None)
+    parser.add_argument('--population-dir', default=None)
     args = parser.parse_args()
     dates = [d.strip() for d in args.dates.split(',') if d.strip()]
-    sys.exit(run(dates))
+    sys.exit(run(dates, args.transaction_dir, args.population_dir))
 
 
 if __name__ == '__main__':

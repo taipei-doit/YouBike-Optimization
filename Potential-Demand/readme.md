@@ -43,22 +43,23 @@ This is de-identified data provided by **Far EasTone Telecommunications Corporat
 
 | Layer | Tools | Notes |
 |-------|--------|------|
-| Tabular ETL (batch) | JDK 17+, Clojure CLI, tablecloth (`clj-etl/`) | Population + transaction aggregation |
-| Python bridge | pandas, PyArrow, GeoPandas | `src/bridge/export_tabular.py` → staging Parquet |
-| Spatial / open-data features | GeoPandas, Shapely, Rasterio, rasterstats | Remains in `preprocess.py` |
+| Tabular ETL (batch container) | Docker `clj-etl` (Temurin 17 + Clojure + tablecloth) | Population + transaction aggregation; **no host JDK** |
+| Python bridge / GIS | conda env + optional `python-batch` image | `src/bridge/`, `preprocess.py` |
 | Modeling | LightGBM, XGBoost, CatBoost, Optuna | `train.py` / `inference.py` |
 
-Clojure does **not** own GIS, raster, or model training. See [`clj-etl/README.md`](clj-etl/README.md) for staging schemas.
+This is a **file-based batch pipeline** (Docker Compose jobs), **not** microservices. Clojure does **not** own GIS, raster, or training. Staging schemas: [`clj-etl/README.md`](clj-etl/README.md).
 
 ```
-pickle / stop CSV ──(Python bridge)──► staging/txn_raw.parquet
-                                       staging/stop_grid_map.parquet
-population CSV ──┐                     staging/grid_ids.parquet
-                 ▼
-            Clojure ETL ──► staging/base_keys.parquet
-                            staging/features_*.parquet
-                 ▼
-     preprocess.py (GIS merge) ──► DF.csv ──► train / inference
+fixtures/mini or input/data
+        │
+        ▼
+ Python bridge ──► staging/*_raw / stop_grid_map / grid_ids
+        │
+        ▼
+ Docker clj-etl ──► staging/base_keys + features_*.parquet
+        │
+        ├─ make smoke: parity only
+        └─ make pipeline: preprocess GIS ──► DF.csv ──► train / inference
 ```
 
 # Usage
@@ -68,27 +69,34 @@ population CSV ──┐                     staging/grid_ids.parquet
 ```bash
 conda env create -f environment.yml
 conda activate youbike_potential_demand
+# Docker required for default `make etl-clj` / `make smoke`
 ```
 
-Also install **JDK 17+** and the [Clojure CLI](https://clojure.org/guides/install_clojure).
+Real EasyCard / signal / open-data payloads are **not** in git. Place them under `input/data/` locally (see `input/params.ini` paths).
 
-## Hybrid pipeline (recommended)
-
-From `Potential-Demand/`:
+## Smoke (no real data, no host JDK)
 
 ```bash
+make docker-build
+make smoke              # host conda python + Docker clj-etl
+make smoke-docker       # everything in Docker (no host conda/JDK)
+```
+
+Generates `fixtures/mini/`, runs bridge → Docker Clojure ETL → parity. Does **not** run full GIS preprocess.
+
+## Full hybrid pipeline (private data)
+
+```bash
+make docker-build
 make pipeline                 # bridge → etl-clj → parity → preprocess
-make bridge                   # Python: export staging inputs
-make etl-clj                  # Clojure: tabular features
-make parity                   # Compare Clojure vs legacy Python tabular outputs
-make preprocess               # Python: merge staging + GIS → DF.csv
+make bridge / make etl-clj / make parity / make preprocess   # steps
 ```
 
 Override dates: `make pipeline DATES=20230305,20230311`.
 
 ## Legacy / modeling entrypoints
 
-After staging + preprocess have produced `DF.csv`, you can still run `main.py` for modeling and inference (preprocess inside `main.py` now expects staging files).
+After staging + preprocess have produced `DF.csv`, run `main.py` for modeling and inference (`main.py` expects staging files for preprocess).
 
 Configure `input/params.ini` (`target` = `"on"` / `"off"`, Optuna search spaces, paths).
 

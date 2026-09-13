@@ -16,7 +16,7 @@ import configparser
 import os
 import pickle
 from ast import literal_eval
-from typing import List
+from typing import List, Optional
 
 import geopandas as gpd
 import pandas as pd
@@ -42,14 +42,30 @@ def _overlay_point_to_grid(
     return overlay_df.drop_duplicates(subset=[point_key]).reset_index(drop=True)
 
 
-def load_paths() -> dict:
+def load_paths(
+    transaction_dir: Optional[str] = None,
+    population_dir: Optional[str] = None,
+) -> dict:
+    if transaction_dir and population_dir:
+        return {'transaction': transaction_dir, 'population': population_dir}
+
     config = configparser.ConfigParser()
     config.read('input/params.ini', encoding='utf-8')
     file_path = config['FILEPATH']
     return {
-        'transaction': literal_eval(file_path['transaction']),
-        'population': literal_eval(file_path['population']),
+        'transaction': transaction_dir or literal_eval(file_path['transaction']),
+        'population': population_dir or literal_eval(file_path['population']),
     }
+
+
+def _load_txn_frame(pkl_path: str) -> pd.DataFrame:
+    with open(pkl_path, 'rb') as handle:
+        payload = pickle.load(handle)
+    if isinstance(payload, pd.DataFrame):
+        return payload
+    if isinstance(payload, list):
+        return pd.DataFrame(payload)
+    raise TypeError(f'Unsupported txn pickle type: {type(payload)}')
 
 
 def export_txn_raw(transaction_file_path: str, date_list: List[str], out_path: str) -> None:
@@ -58,11 +74,9 @@ def export_txn_raw(transaction_file_path: str, date_list: List[str], out_path: s
         pkl_path = (
             f'{transaction_file_path}/202303_txn_identified_transfer/{date}.pkl'
         )
-        with open(pkl_path, 'rb') as handle:
-            frames.append(pickle.load(handle))
+        frames.append(_load_txn_frame(pkl_path))
     df = pd.concat(frames, ignore_index=True)
 
-    # Normalize datetime columns for Parquet / Clojure consumption
     for col in ('on_time', 'off_time'):
         if col in df.columns:
             df[col] = pd.to_datetime(df[col]).astype(str)
@@ -96,7 +110,6 @@ def export_stop_grid_map(
     point_df = stop_gdf[['sno', 'geometry']].drop_duplicates().reset_index(drop=True)
     point_df = point_df.rename(columns={'sno': 'stop_id'})
     mapped = _overlay_point_to_grid(point_df, grid_poly, 'stop_id')
-    mapped = mapped.rename(columns={'stop_id': 'stop_id', 'gridid': 'gridid'})
     mapped.to_parquet(out_path, index=False)
     print(f'Wrote {out_path} ({len(mapped)} rows)')
     return grid_df
@@ -108,9 +121,13 @@ def export_grid_ids(grid_df: gpd.GeoDataFrame, out_path: str) -> None:
     print(f'Wrote {out_path} ({len(grid_ids)} rows)')
 
 
-def run(date_list: List[str] | None = None) -> None:
+def run(
+    date_list: List[str] | None = None,
+    transaction_dir: Optional[str] = None,
+    population_dir: Optional[str] = None,
+) -> None:
     date_list = date_list or DEFAULT_DATES
-    paths = load_paths()
+    paths = load_paths(transaction_dir, population_dir)
     os.makedirs(STAGING_DIR, exist_ok=True)
 
     export_txn_raw(
@@ -135,9 +152,21 @@ def main() -> None:
         default=','.join(DEFAULT_DATES),
         help='Comma-separated YYYYMMDD dates',
     )
+    parser.add_argument(
+        '--transaction-dir',
+        type=str,
+        default=None,
+        help='Override transaction data dir (default: params.ini / fixtures)',
+    )
+    parser.add_argument(
+        '--population-dir',
+        type=str,
+        default=None,
+        help='Override population data dir (default: params.ini / fixtures)',
+    )
     args = parser.parse_args()
     dates = [d.strip() for d in args.dates.split(',') if d.strip()]
-    run(dates)
+    run(dates, args.transaction_dir, args.population_dir)
 
 
 if __name__ == '__main__':
