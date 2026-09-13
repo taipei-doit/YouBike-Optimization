@@ -7,6 +7,24 @@ Furthermore, under the current operational model, YouBike Corporation assign per
 
 In addition to the existing stations, we also give significant consideration to the areas where we plan to set up new stations in the future. We divide Taipei City into 4,309 grids, some of which may already have stations, while others do not. We utilize machine learning to build a model that predicts rental and return counts based on the existing station grids. With this model, we can forecast the potential demand in grids without stations and determine how many docks are needed. Of course, not all grids without stations will require new stations; unsuitable areas will not appear in our recommended station expansion list.
 
+# Tech stack
+
+Hybrid pipeline under [`Potential-Demand/`](Potential-Demand/):
+
+| Layer | Stack | Responsibility |
+|-------|--------|----------------|
+| Tabular ETL | Clojure + tablecloth in **Docker** (`eclipse-temurin:17`) | Population / transaction aggregation |
+| Spatial + bridge | Python 3.9, GeoPandas, Rasterio, pandas, PyArrow | Stop→grid overlay, GIS features, pickle→Parquet |
+| Modeling | LightGBM, XGBoost, CatBoost, Optuna | Train / tune / inference |
+
+**Not microservices:** two **batch containers** (`python-batch`, `clj-etl`) plus file exchange under `staging/`. No host JDK required for Clojure ETL.
+
+```bash
+make -C Potential-Demand docker-build
+make -C Potential-Demand smoke-docker   # recommended without local conda/JDK
+make -C Potential-Demand pipeline       # needs private input/data
+```
+
 # Acknowledgements
 The authors would like to extend our gratitude to **Department of Transportation, Taipei City Government** and **YouBike Corporation** for their contributions and support to this project.
 The authors are thankful for the assistance and resources provided, which were instrumental in the successful completion of this project.

@@ -39,20 +39,71 @@ This is de-identified data provided by **Far EasTone Telecommunications Corporat
 
     Number of businesses, total review count, and total rating sum for the following business types: tourist attractions, shopping malls, laundry services, homestays, nightclubs, convenience stores, museums, supermarkets, clothing stores, bookstores, restaurants, cafes, and retail stores.
 
-# Usage
-Run the following command to setup the conda enviroment.
-``` bash
-conda env create -f /path/to/environment.yml
+# Tech stack
+
+| Layer | Tools | Notes |
+|-------|--------|------|
+| Tabular ETL (batch container) | Docker `clj-etl` (Temurin 17 + Clojure + tablecloth) | Population + transaction aggregation; **no host JDK** |
+| Python bridge / GIS | conda env + optional `python-batch` image | `src/bridge/`, `preprocess.py` |
+| Modeling | LightGBM, XGBoost, CatBoost, Optuna | `train.py` / `inference.py` |
+
+This is a **file-based batch pipeline** (Docker Compose jobs), **not** microservices. Clojure does **not** own GIS, raster, or training. Staging schemas: [`clj-etl/README.md`](clj-etl/README.md).
+
+```
+fixtures/mini or input/data
+        │
+        ▼
+ Python bridge ──► staging/*_raw / stop_grid_map / grid_ids
+        │
+        ▼
+ Docker clj-etl ──► staging/base_keys + features_*.parquet
+        │
+        ├─ make smoke: parity only
+        └─ make pipeline: preprocess GIS ──► DF.csv ──► train / inference
 ```
 
-If you want to obtain end-to-end results, you can execute `main.py` after setting up the **Conda** virtual environment. This file will execute the entire data preprocessing, modeling, and inference.
+# Usage
 
-Surely, if you wish to make advanced configurations, you can navigate to the `input` directory and modify the `params.ini`. This file contains numerous initial parameters, and within the `[INI]` section, the `target` setting controls whether you want to build a model for predicting rental counts or return counts. Simply set `target` to `on` or `off` accordingly. If you want to customize the model's hyperparameters, you can also make changes here. You can specify your desired hyperparameter space, allowing **Optuna** to find the best performance under different parameter settings.
+## Environment
 
-Additionally, you can execute individual Python files to complete specific tasks in stages, especially `preprocess.py`. During the data preprocessing stage, significant effort has been made to consolidate various data related to the city. You may want to start by running `preprocess.py`, then check the `DF.csv` file in the `output_ON` or `output_OFF` directory to verify the preprocessed data.
+```bash
+conda env create -f environment.yml
+conda activate youbike_potential_demand
+# Docker required for default `make etl-clj` / `make smoke`
+```
+
+Real EasyCard / signal / open-data payloads are **not** in git. Place them under `input/data/` locally (see `input/params.ini` paths).
+
+## Smoke (no real data, no host JDK)
+
+```bash
+make docker-build
+make smoke              # host conda python + Docker clj-etl
+make smoke-docker       # everything in Docker (no host conda/JDK)
+```
+
+Generates `fixtures/mini/`, runs bridge → Docker Clojure ETL → parity. Does **not** run full GIS preprocess.
+
+## Full hybrid pipeline (private data)
+
+```bash
+make docker-build
+make pipeline                 # bridge → etl-clj → parity → preprocess
+make bridge / make etl-clj / make parity / make preprocess   # steps
+```
+
+Override dates: `make pipeline DATES=20230305,20230311`.
+
+## Legacy / modeling entrypoints
+
+After staging + preprocess have produced `DF.csv`, run `main.py` for modeling and inference (`main.py` expects staging files for preprocess).
+
+Configure `input/params.ini` (`target` = `"on"` / `"off"`, Optuna search spaces, paths).
 
 # Preprocess
 As mentioned earlier, we have divided Taipei City into 4,309 grids, and we collect data for each grid. Each row of data includes grid ID, date, hour, rental and return counts, and features. If there are multiple YouBike stations within a single grid, the rental and return counts represent the sum of the counts for those stations within that hour.
+
+Tabular rental/return and population features are produced by the Clojure batch and merged in `preprocess.py`; road/terrain/land/POI features are still computed in Python.
 
 # Model Training
 We have developed two sets of models, one for predicting rental counts and the other for predicting return counts. Through **ensemble learning** , including **LightGBM**, **XGBoost**, and **CatBoost**, to build these models.

@@ -1,6 +1,9 @@
 """
 This script represents a pipeline for data preprocessing, model training, and inference.
 
+Hybrid tabular ETL: run `make bridge` and `make etl-clj` (or `make pipeline`) before
+preprocess so that `staging/*.parquet` exists. Spatial/GIS features and ML remain in Python.
+
 It initializes with a list of dates for processing and executes the following steps:
 1. Data Preprocessing:
    - Data preprocessing is performed using the 'Preprocess' class.
@@ -19,6 +22,8 @@ in separate Python files.
 """
 
 import datetime
+import os
+import sys
 
 import inference
 import preprocess
@@ -29,8 +34,29 @@ date_list = [
     '20230305', '20230311', '20230317', '20230322'
 ]
 
+def _ensure_staging(dates):
+    """Run Python bridge; remind if Clojure staging features are missing."""
+    from src.bridge import export_tabular
+    export_tabular.run(dates)
+    required = [
+        'staging/base_keys.parquet',
+        'staging/features_transaction.parquet',
+        'staging/features_population.parquet',
+    ]
+    missing = [p for p in required if not os.path.exists(p)]
+    if missing:
+        print(
+            'Missing Clojure ETL outputs:\n  - '
+            + '\n  - '.join(missing)
+            + '\nRun `make etl-clj` (requires JDK 17+ and Clojure CLI), then retry.'
+        )
+        sys.exit(1)
+
+_ensure_staging(date_list)
+
 # Data Preprocessing
 p = preprocess.Preprocess(date_list=date_list)
+
 
 # Measure and print the start time of data preprocessing
 start_time = datetime.datetime.now()

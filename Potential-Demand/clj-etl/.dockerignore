@@ -1,0 +1,4 @@
+# Local Clojure tooling (host install); image has its own CLI
+.tools
+.clj-config
+.cpcache

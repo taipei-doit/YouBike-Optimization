@@ -1,0 +1,13 @@
+# Keep batch image builds lean
+.git
+.ignore
+**/__pycache__
+**/*.pyc
+**/.DS_Store
+clj-etl/.tools
+clj-etl/.clj-config
+clj-etl/.cpcache
+staging/*.parquet
+output_ON/**
+output_OFF/**
+input/data/**
